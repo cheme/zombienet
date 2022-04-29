@@ -123,7 +123,6 @@ export async function generateNetworkSpec(
       node.name // group of 1
     );
 
-    console.log(nodeSetup);
     networkSpec.relaychain.nodes.push(nodeSetup);
   }
 
@@ -426,7 +425,7 @@ async function getNodeFromConfig(
       : true;
 
   const nodeName = getUniqueName(node.name);
-  const accountsForNode = await generateKeyForNode();
+  const accountsForNode = await generateKeyForNode(node.name);
   // build node Setup
   const nodeSetup: Node = {
     name: nodeName,

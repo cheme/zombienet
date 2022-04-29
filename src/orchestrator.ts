@@ -198,7 +198,13 @@ export async function start(
       // Chain spec customization logic
       clearAuthorities(chainSpecFullPathPlain);
       for (const node of networkSpec.relaychain.nodes) {
-        await addAuthority(chainSpecFullPathPlain, node.name, node.accounts!);
+console.log(
+`\n\t\t 🚧 ${node.validator}`
+);
+
+				if (node.validator) {
+				  await addAuthority(chainSpecFullPathPlain, node.name, node.accounts!);
+				}
       }
 
       if (networkSpec.relaychain.genesis) {
