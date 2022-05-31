@@ -1,5 +1,5 @@
 import { Providers } from "./providers/";
-import { LaunchConfig, ComputedNetwork, Node, fileMap, Parachain } from "./types";
+import { LaunchConfig, ComputedNetwork, Node, fileMap, Parachain, MultiAddressByNode } from "./types";
 import {
   generateNetworkSpec,
   generateBootnodeSpec,
@@ -18,6 +18,11 @@ import {
   LOCALHOST,
   INTROSPECTOR_POD_NAME,
   INTROSPECTOR_PORT,
+  TRACING_COLLATOR_NAME,
+  TRACING_COLLATOR_PORT,
+  TRACING_COLLATOR_SERVICE,
+  TRACING_COLLATOR_NAMESPACE,
+  TRACING_COLLATOR_PODNAME,
 } from "./constants";
 import { Network, Scope } from "./network";
 import { NetworkNode } from "./networkNode";
@@ -67,6 +72,7 @@ export async function start(
 
   let network: Network | undefined;
   let cronInterval = undefined;
+  let multiAddressByNode: MultiAddressByNode = {};
   try {
     // Parse and build Network definition
     const networkSpec: ComputedNetwork = await generateNetworkSpec(
@@ -122,11 +128,12 @@ export async function start(
       initClient,
       setupChainSpec,
       getChainSpecRaw,
+      replaceMultiAddresReferences,
     } = Providers.get(networkSpec.settings.provider);
 
     const client = initClient(credentials, namespace, tmpDir.path);
-    const endpointPort =
-      client.providerName === "native" ? RPC_WS_PORT : RPC_HTTP_PORT;
+
+    if(networkSpec.settings.node_spawn_timeout) client.timeout = networkSpec.settings.node_spawn_timeout;
     network = new Network(client, namespace, tmpDir.path);
 
     console.log(
@@ -174,7 +181,7 @@ export async function start(
 
     // Create bootnode and backchannel services
     debug(`Creating static resources (bootnode and backchannel services)`);
-    await client.staticSetup();
+    await client.staticSetup(networkSpec.settings);
     await client.createPodMonitor("pod-monitor.yaml", chainName);
 
     // create or copy chain spec
@@ -368,21 +375,21 @@ console.log(
         keystoreLocalDir = path.dirname(keystoreFiles[0]);
       }
 
+      // replace all multiaddress references in command
+      replaceMultiAddresReferences(podDef, multiAddressByNode)
+
       await client.spawnFromDef(
         podDef,
         finalFilesToCopyToNode,
         keystoreLocalDir
       );
 
+      const [nodeIp, nodePort] = await client.getNodeInfo(podDef.metadata.name);
+      const nodeMultiAddress = await generateBootnodeString(node.key!, nodeIp, nodePort);
+      multiAddressByNode[podDef.metadata.name] = nodeMultiAddress;
+
       if (node.addToBootnodes) {
-        // add first node as bootnode
-        const [nodeIp, nodePort] = await client.getNodeInfo(
-          podDef.metadata.name
-        );
-        bootnodes.push(
-          await generateBootnodeString(node.key!, nodeIp, nodePort)
-        );
-        // add bootnodes to chain spec
+        bootnodes.push(nodeMultiAddress);
         await addBootNodes(chainSpecFullPath, bootnodes);
         // flush require cache since we change the chain-spec
         delete require.cache[require.resolve(chainSpecFullPath)];
@@ -404,6 +411,10 @@ console.log(
           userDefinedTypes
         );
       } else {
+        const endpointPort = (node.zombieRole === "node") ?
+          client.providerName === "native" ? RPC_WS_PORT : RPC_HTTP_PORT :
+          RPC_WS_PORT;
+
         const nodeIdentifier = `${podDef.kind}/${podDef.metadata.name}`;
         const fwdPort = await client.startPortForwarding(
           endpointPort,
@@ -465,11 +476,11 @@ console.log(
         switch (networkSpec.settings.provider) {
           case "podman":
             console.log(
-              `\n\t\t\t podman logs ${podDef.metadata.name}_pod-${podDef.metadata.name}`
+              `\n\t\t\t podman logs -f ${podDef.metadata.name}_pod-${podDef.metadata.name}`
             );
             break;
           case "kubernetes":
-            console.log(`\n\t\t\t kubectl logs ${podDef.metadata.name}`);
+            console.log(`\n\t\t\t kubectl logs -f ${podDef.metadata.name} -c ${podDef.metadata.name} -n ${namespace}`);
             break;
           case "native":
             console.log(
@@ -552,7 +563,7 @@ console.log(
     // launch all collator in series
     await series(collatorPromiseGenerators, opts.spawnConcurrency);
 
-    // check if polkador-instrospector is enabled
+    // check if polkadot-instrospector is enabled
     if(networkSpec.settings.polkadot_introspector && ["podman", "kubernetes"].includes(networkSpec.settings.provider)) {
       const firstNode = network.relay[0];
       const [nodeIp, port] = await client.getNodeInfo(firstNode.name, RPC_HTTP_PORT);
@@ -572,11 +583,50 @@ console.log(
       network.addNode(introspectorNetworkNode, Scope.COMPANION);
     }
 
+    // Add span collator if is available
+    if(networkSpec.settings.tracing_collator_url) {
+      network.tracingCollatorUrl = networkSpec.settings.tracing_collator_url;
+    } else {
+      const servicePort = networkSpec.settings.tracing_collator_service_port || TRACING_COLLATOR_PORT;
+      switch(networkSpec.settings.provider) {
+        case "kubernetes":
+          // check if we have the service available
+          const serviceName = networkSpec.settings.tracing_collator_service_name || TRACING_COLLATOR_SERVICE;
+          const serviceNamespace = networkSpec.settings.tracing_collator_service_namespace || TRACING_COLLATOR_NAMESPACE;
+          // check if service exists
+          let serviceExist;
+          try {
+            await client.runCommand(["get","service", serviceName, "-n", serviceNamespace]);
+            serviceExist = true;
+          } catch(_) {
+            console.log(decorators.yellow(`\n\t Warn: Tracing collator service doesn't exist`));
+          }
+
+          if(serviceExist) {
+            try {
+              const tracingPort = await client.startPortForwarding(servicePort, `service/${serviceName}`, serviceNamespace);
+              network.tracingCollatorUrl = `http://localhost:${tracingPort}`;
+            } catch(_) {
+              console.log(decorators.yellow(`\n\t Warn: Can not create the forwarding to the tracing collator`));
+            }
+          }
+          break;
+        case "podman":
+          const tracingPort = await client.getPortMapping(servicePort, TRACING_COLLATOR_PODNAME);
+          network.tracingCollatorUrl = `http://localhost:${tracingPort}`;
+          break;
+      }
+    }
+
+
     // prevent global timeout
     network.launched = true;
     debug(
       `\t 🚀 LAUNCH COMPLETE under namespace ${decorators.green(namespace)} 🚀`
     );
+
+    await fs.promises.writeFile(`${tmpDir.path}/zombie.json`, JSON.stringify(network));
+
     return network;
   } catch (error) {
     console.error(error);

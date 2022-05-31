@@ -2,6 +2,7 @@
 // mapped from the json/toml to compute the
 // network config to spawn.
 export interface LaunchConfig {
+  config: { provider: string; };
   settings: Settings;
   relaychain: RelayChainConfig;
   parachains: ParachainConfig[];
@@ -15,13 +16,19 @@ export interface Settings {
   bootnode?: boolean;
   bootnode_domain?: string;
   timeout: number;
+  node_spawn_timeout?: number;
   grafana?: boolean;
   telemetry?: boolean;
   prometheus?: boolean;
   jaeger_agent?: string; // agent or collator
+  tracing_collator_url?: string; // collator query url
+  tracing_collator_service_name?: string; // only used by k8s provider and if not set the `url`
+  tracing_collator_service_namespace?: string; // only used by k8s provider and if not set the `url`
+  tracing_collator_service_port?: number // only used by k8s provider and if not set the `url`
   enable_tracing?: boolean;
   provider: string;
   polkadot_introspector?: boolean;
+  backchannel?: boolean; // only used in k8s at the moment, spawn a backchannel instance
 }
 
 export interface RelayChainConfig {
@@ -75,22 +82,11 @@ export interface ParachainConfig {
   genesis_state_generator?: string;
   cumulus_based?: boolean;
   bootnodes?: string[];
-  collator?: CollatorConfig;
-  collator_groups?: CollatorGroupConfig[];
-}
-
-export interface CollatorConfig {
-  image?: string;
-  command?: string;
-  commandWithArgs?: string;
-  name?: string;
-  args?: string[];
-  env?: envVars[];
-}
-
-export interface CollatorGroupConfig {
-  collator: CollatorConfig;
-  count: number;
+  // backward compatibility
+  collator?: NodeConfig;
+  collators?: NodeConfig[];
+  collator_groups?: NodeGroupConfig[];
+  genesis?: JSON | ObjectJSON;
 }
 
 export interface HrmpChannelsConfig {
@@ -101,12 +97,12 @@ export interface HrmpChannelsConfig {
 }
 
 // Computed Network
-// T
 export interface ComputedNetwork {
   settings: Settings;
   relaychain: {
     defaultImage: string;
     defaultCommand: string;
+    defaultArgs: string[];
     chain: string;
     chainSpecPath?: string;
     chainSpecCommand?: string;
@@ -172,6 +168,7 @@ export interface Parachain {
   specPath?: string;
   balance?: number;
   collators: Node[];
+  genesis?: JSON | ObjectJSON
 }
 
 export interface envVars {
@@ -234,4 +231,8 @@ export interface Resources {
       cpu?: string;
     };
   };
+}
+
+export interface MultiAddressByNode {
+  [key: string]: string;
 }

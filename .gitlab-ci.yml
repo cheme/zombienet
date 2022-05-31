@@ -18,9 +18,6 @@ stages:
 
 variables:
   CI_IMAGE:                        "node:16.10"
-  VAULT_SERVER_URL:                "https://vault.parity-mgmt-vault.parity.io"
-  VAULT_AUTH_PATH:                 "gitlab-parity-io-jwt"
-  VAULT_AUTH_ROLE:                 "cicd_gitlab_parity_${CI_PROJECT_NAME}"
   DOCKERFILE:                      scripts/ci/docker/zombienet_injected.Dockerfile
   DOCKERHUB_REPO:                  paritytech
   IMAGE_NAME:                      $DOCKERHUB_REPO/zombienet
@@ -112,7 +109,7 @@ package:
 # template task for building and pushing an image
 .build-push-docker-image:          &build-push-docker-image
   script:
-    - test "$DOCKER_HUB_USER" -a "$DOCKER_HUB_PASS" ||
+    - test "$Docker_Hub_User_Parity" -a "$Docker_Hub_Pass_Parity" ||
         ( echo "no docker credentials provided"; exit 1 )
     - buildah bud
         --format=docker
@@ -122,8 +119,8 @@ package:
         --tag "$IMAGE_NAME:$VERSION"
         --tag "$IMAGE_NAME:latest"
         --file "$DOCKERFILE" .
-    - echo "$DOCKER_HUB_PASS" |
-        buildah login --username "$DOCKER_HUB_USER" --password-stdin docker.io
+    - echo "$Docker_Hub_Pass_Parity" |
+        buildah login --username "$Docker_Hub_User_Parity" --password-stdin docker.io
     - buildah info
     - echo "Effective tags = ${VERSION} latest"
     - buildah push --format=v2s2 "$IMAGE_NAME:$VERSION"
@@ -152,23 +149,16 @@ publish-docker-pr:
   variables:
     CI_IMAGE:                      quay.io/buildah/stable
     DOCKERHUB_REPO:                paritypr
-    DOCKER_HUB_USER:               $DOCKER_HUB_PR_USER
-    DOCKER_HUB_PASS:               $DOCKER_HUB_PR_PASS
   before_script:
     - export VERSION=${CI_COMMIT_SHORT_SHA}
+    - export Docker_Hub_User_Parity=$PARITYPR_USER
+    - export Docker_Hub_Pass_Parity=$PARITYPR_PASS
   <<:                              *kubernetes-env
   <<:                              *common-refs
   <<:                              *build-push-docker-image
 
 publish-docker:
   stage:                           publish
-  secrets:
-    DOCKER_HUB_USER:
-      vault:                       cicd/gitlab/parity/DOCKER_HUB_USER@kv
-      file:                        false
-    DOCKER_HUB_PASS:
-      vault:                       cicd/gitlab/parity/DOCKER_HUB_PASS@kv
-      file:                        false
   variables:
     CI_IMAGE:                      quay.io/buildah/stable
   before_script:
@@ -195,7 +185,7 @@ zombienet-tests-integration:
     - echo "paritypr/zombienet:${CI_COMMIT_SHORT_SHA}"
     - echo "${GH_DIR}"
     - export DEBUG=zombie*
-    - export ZOMBIENET_INTEGRATION_TEST_IMAGE="docker.io/paritypr/synth-wave:master"
+    - export ZOMBIENET_INTEGRATION_TEST_IMAGE="docker.io/paritypr/polkadot-debug:master"
     - export COL_IMAGE="docker.io/paritypr/colander:master"
 
   script:
@@ -221,7 +211,7 @@ zombienet-tests-integration-pr:
     - echo "paritypr/zombienet:${CI_COMMIT_SHORT_SHA}"
     - echo "${GH_DIR}"
     - export DEBUG=zombie
-    - export ZOMBIENET_INTEGRATION_TEST_IMAGE="docker.io/paritypr/synth-wave:master"
+    - export ZOMBIENET_INTEGRATION_TEST_IMAGE="docker.io/paritypr/polkadot-debug:master"
     - export MALUS_IMAGE="docker.io/paritypr/malus:master"
     - export COL_IMAGE="docker.io/paritypr/colander:master"
 
@@ -271,7 +261,7 @@ zombienet-logs-assertion:
     - echo "paritypr/zombienet:${CI_COMMIT_SHORT_SHA}"
     - echo "${GH_DIR}"
     - export DEBUG=zombie*
-    - export ZOMBIENET_INTEGRATION_TEST_IMAGE="docker.io/paritypr/synth-wave:master"
+    - export ZOMBIENET_INTEGRATION_TEST_IMAGE="docker.io/paritypr/polkadot-debug:master"
     - export COL_IMAGE="docker.io/paritypr/colander:4519"
 
   script:
@@ -296,7 +286,7 @@ zombienet-system-event-assertion:
     - echo "paritypr/zombienet:${CI_COMMIT_SHORT_SHA}"
     - echo "${GH_DIR}"
     - export DEBUG=zombie*
-    - export ZOMBIENET_INTEGRATION_TEST_IMAGE="docker.io/paritypr/synth-wave:master"
+    - export ZOMBIENET_INTEGRATION_TEST_IMAGE="docker.io/paritypr/polkadot-debug:master"
     - export COL_IMAGE="docker.io/paritypr/colander:4519"
 
   script:
@@ -321,7 +311,7 @@ zombienet-custom-js-assertion:
     - echo "paritypr/zombienet:${CI_COMMIT_SHORT_SHA}"
     - echo "${GH_DIR}"
     - export DEBUG=zombie*
-    - export ZOMBIENET_INTEGRATION_TEST_IMAGE="docker.io/paritypr/synth-wave:master"
+    - export ZOMBIENET_INTEGRATION_TEST_IMAGE="docker.io/paritypr/polkadot-debug:master"
     - export COL_IMAGE="docker.io/paritypr/colander:4519"
 
   script:
@@ -352,7 +342,7 @@ zombienet-histogram-assertion:
     - echo "paritypr/zombienet:${CI_COMMIT_SHORT_SHA}"
     - echo "${GH_DIR}"
     - export DEBUG=zombie*
-    - export ZOMBIENET_INTEGRATION_TEST_IMAGE="docker.io/paritypr/synth-wave:master"
+    - export ZOMBIENET_INTEGRATION_TEST_IMAGE="docker.io/paritypr/polkadot-debug:master"
     - export COL_IMAGE="docker.io/paritypr/colander:4519"
 
   script:
@@ -383,7 +373,7 @@ zombienet-update-genesis-config:
     - echo "paritypr/zombienet:${CI_COMMIT_SHORT_SHA}"
     - echo "${GH_DIR}"
     - export DEBUG=zombie*
-    - export ZOMBIENET_INTEGRATION_TEST_IMAGE="docker.io/paritypr/synth-wave:master"
+    - export ZOMBIENET_INTEGRATION_TEST_IMAGE="docker.io/paritypr/polkadot-debug:master"
     - export COL_IMAGE="docker.io/paritypr/colander:4519"
 
   script:
@@ -414,7 +404,7 @@ zombienet-scale-net-config:
     - echo "paritypr/zombienet:${CI_COMMIT_SHORT_SHA}"
     - echo "${GH_DIR}"
     - export DEBUG=zombie*
-    - export ZOMBIENET_INTEGRATION_TEST_IMAGE="docker.io/paritypr/synth-wave:master"
+    - export ZOMBIENET_INTEGRATION_TEST_IMAGE="docker.io/paritypr/polkadot-debug:master"
     - export COL_IMAGE="docker.io/paritypr/colander:4519"
 
   script:

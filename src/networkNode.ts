@@ -1,5 +1,6 @@
 import { ApiPromise, WsProvider } from "@polkadot/api";
 import minimatch from "minimatch";
+import axios from "axios";
 
 import {
   Metrics,
@@ -312,11 +313,10 @@ export class NetworkNode implements NetworkNodeInterface {
     try {
       const re = isGlob ? minimatch.makeRe(pattern) : new RegExp(pattern, "ig");
       const client = getClient();
-
+      let logs = await client.getNodeLogs(this.name, undefined,  true);
       const getValue = async () => {
         let done = false;
         while (!done) {
-          const logs = await client.getNodeLogs(this.name, 2, true);
           const dedupedLogs = this._dedupLogs(
             logs.split("\n"),
             client.providerName === "native"
@@ -336,6 +336,7 @@ export class NetworkNode implements NetworkNodeInterface {
             debug(this.lastLogLineCheckedTimestamp.split(" ").slice(1).join(" "));
           } else {
             await new Promise((resolve) => setTimeout(resolve, 1000));
+            logs = await client.getNodeLogs(this.name, 2,  true);
           }
         }
       }
@@ -354,6 +355,34 @@ export class NetworkNode implements NetworkNodeInterface {
       console.log(`\n\t ${decorators.red("Error: ")} \n\t\t ${decorators.red(err.message)}\n`);
       return false;
     }
+  }
+
+  async getSpansByTraceId(traceId: string, collatorUrl: string): Promise<string[]> {
+    const url = `${collatorUrl}/api/traces/${traceId}`;
+    const response = await axios.get(url, { timeout: 2000 });
+
+    // filter batches
+    const batches = response.data.batches.filter( (batch: any) => {
+      const serviceNameAttr = batch.resource.attributes.find((attr:any) => {
+        return attr.key === "service.name";
+      });
+
+      if(!serviceNameAttr) return false;
+
+      return serviceNameAttr.value.stringValue.split('-').slice(1).join('-') === this.name;
+    });
+
+    // get the `names` of the spans
+    const spanNames: string[] = [];
+    for(const batch of batches) {
+      for(const instrumentationSpan of batch.instrumentationLibrarySpans) {
+        for(const span of instrumentationSpan.spans) {
+          spanNames.push(span.name);
+        }
+      }
+    }
+
+    return spanNames;
   }
 
   // prevent to seach in the same log line twice.

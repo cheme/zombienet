@@ -9,7 +9,7 @@ import {
   Override,
   NodeConfig,
   envVars,
-  CollatorConfig,
+  NodeGroupConfig,
 } from "./types";
 import { getSha256 } from "./utils/misc-utils";
 import {
@@ -67,6 +67,7 @@ export async function generateNetworkSpec(
     relaychain: {
       defaultImage: config.relaychain.default_image || DEFAULT_IMAGE,
       defaultCommand: config.relaychain.default_command || DEFAULT_COMMAND,
+      defaultArgs: config.relaychain.default_args || [],
       nodes: [],
       chain: config.relaychain.chain || DEFAULT_CHAIN,
       overrides: globalOverrides,
@@ -165,7 +166,7 @@ export async function generateNetworkSpec(
       // collator could by defined in groups or
       // just using one collator definiton
       let collators = [];
-      if (parachain.collator)
+      if(parachain.collator)
         collators.push(
           getCollatorNodeFromConfig(
             parachain.collator,
@@ -175,12 +176,35 @@ export async function generateNetworkSpec(
             Boolean(parachain.cumulus_based)
           )
         );
+      for(const collatorConfig of parachain.collators || []) {
+        collators.push(
+          getCollatorNodeFromConfig(
+            collatorConfig,
+            parachain.id,
+            chainName,
+            bootnodes,
+            Boolean(parachain.cumulus_based)
+          )
+        );
+      }
 
       for (const collatorGroup of parachain.collator_groups || []) {
+
         for (let i = 0; i < collatorGroup.count; i++) {
+          let node: NodeConfig = {
+            name: `${collatorGroup.name}-${i}`,
+            image: collatorGroup.image || networkSpec.relaychain.defaultImage,
+            command: collatorGroup.command,
+            args: sanitizeArgs(collatorGroup.args||[]),
+            validator: true, // groups are always validators
+            env: collatorGroup.env,
+            overrides: collatorGroup.overrides,
+            resources:
+            collatorGroup.resources || networkSpec.relaychain.defaultResources,
+          };
           collators.push(
             getCollatorNodeFromConfig(
-              collatorGroup.collator,
+              node,
               parachain.id,
               chainName,
               bootnodes,
@@ -242,7 +266,9 @@ export async function generateNetworkSpec(
       } else {
         computedWasmCommand = parachain.genesis_wasm_generator
           ? parachain.genesis_wasm_generator
-          : `${collatorBinary} ${DEFAULT_WASM_GENERATE_SUBCOMMAND} > {{CLIENT_REMOTE_DIR}}/${GENESIS_WASM_FILENAME}`;
+          : `${collatorBinary} ${DEFAULT_WASM_GENERATE_SUBCOMMAND}`;
+
+          computedWasmCommand += ` > {{CLIENT_REMOTE_DIR}}/${GENESIS_WASM_FILENAME}`;
       }
 
       let parachainSetup: Parachain = {
@@ -266,6 +292,7 @@ export async function generateNetworkSpec(
         ...(computedStateCommand
           ? { genesisStateGenerator: computedStateCommand }
           : {}),
+        ...(parachain.genesis ? { genesis: parachain.genesis} : {}),
       };
 
       networkSpec.parachains.push(parachainSetup);
@@ -339,7 +366,7 @@ async function getLocalOverridePath(
 }
 
 function getCollatorNodeFromConfig(
-  collatorConfig: CollatorConfig,
+  collatorConfig: NodeConfig,
   para_id: number,
   chain: string, // relay-chain
   bootnodes: string[], // parachain bootnodes
@@ -364,7 +391,7 @@ function getCollatorNodeFromConfig(
   const node: Node = {
     name: collatorName,
     key: getSha256(collatorName),
-    validator: false,
+    validator: collatorConfig.validator !== false ? true : false, // --collator and --force-authoring by default
     image: collatorConfig.image || DEFAULT_COLLATOR_IMAGE,
     command: collatorBinary,
     commandWithArgs: collatorConfig.commandWithArgs,
@@ -393,8 +420,10 @@ async function getNodeFromConfig(
     ? node.command
     : networkSpec.relaychain.defaultCommand;
   const image = node.image ? node.image : networkSpec.relaychain.defaultImage;
-  let args: string[] = [];
+  let args: string[] = sanitizeArgs(networkSpec.relaychain.defaultArgs || []);
   if(node.args) args = args.concat(sanitizeArgs(node.args));
+
+  const uniqueArgs = [...new Set(args)];
 
   const env = node.env ? DEFAULT_ENV.concat(node.env) : DEFAULT_ENV;
 
@@ -425,7 +454,7 @@ async function getNodeFromConfig(
       : true;
 
   const nodeName = getUniqueName(node.name);
-  const accountsForNode = await generateKeyForNode(node.name);
+  const accountsForNode = await generateKeyForNode(nodeName);
   // build node Setup
   const nodeSetup: Node = {
     name: nodeName,
@@ -436,7 +465,7 @@ async function getNodeFromConfig(
     image: image || DEFAULT_IMAGE,
     chain: networkSpec.relaychain.chain,
     validator: isValidator,
-    args,
+    args: uniqueArgs,
     env,
     bootnodes: relayChainBootnodes,
     telemetryUrl: networkSpec.settings?.telemetry

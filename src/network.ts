@@ -30,6 +30,35 @@ export enum Scope {
   COMPANION
 }
 
+export function rebuildNetwork(client: Client, runningNetworkSpec: any): Network {
+  const {namespace, tmpDir, companions, launched, backchannel, chainSpecFullPath, nodesByName, tracingCollatorUrl} = runningNetworkSpec;
+  const network: Network = new Network(client, namespace, tmpDir);
+  Object.assign(network, {companions, launched, backchannel, chainSpecFullPath, tracingCollatorUrl});
+
+  for( const nodeName of Object.keys(nodesByName)) {
+    const node = nodesByName[nodeName];
+    const networkNode = new NetworkNode(
+      node.name,
+      node.wsUri,
+      node.prometheusUri,
+      node.userDefinedTypes
+    );
+
+    if(node.parachainId) {
+      if (!network.paras[node.parachainId]) network.addPara(node.parachainId, node.parachainSpecPath);
+      networkNode.parachainId = node.parachainId;
+    }
+
+    networkNode.group = node.group;
+    network.addNode(networkNode, node.parachainId ? Scope.PARA : Scope.RELAY);
+  }
+
+  // ensure keep running by mark that was already running
+  network.wasRunning = true;
+
+  return network;
+}
+
 export class Network {
   relay: NetworkNode[] = [];
   paras: {
@@ -46,14 +75,18 @@ export class Network {
   namespace: string;
   client: Client;
   launched: boolean;
+  wasRunning: boolean;
   tmpDir: string;
   backchannelUri: string = "";
   chainSpecFullPath?: string;
+  tracingCollatorUrl?: string;
+
 
   constructor(client: Client, namespace: string, tmpDir: string) {
     this.client = client;
     this.namespace = namespace;
     this.launched = false;
+    this.wasRunning = false;
     this.tmpDir = tmpDir;
   }
 
@@ -239,9 +272,15 @@ export class Network {
     return node;
   }
 
-  getNodesInGroup(nodeName: string): NetworkNode[] {
-    const nodes = this.groups[nodeName];
-    if (!nodes) throw new Error(`GROUP: ${nodeName} not present`);
+  getNodes(nodeOrGroupName: string): NetworkNode[] {
+    //check if is a node
+    const node = this.nodesByName[nodeOrGroupName];
+    if(node) return [node]
+
+    //check if is a group
+    const nodes = this.groups[nodeOrGroupName];
+
+    if (!nodes) throw new Error(`Noode or Group: ${nodeOrGroupName} not present`);
     return nodes;
   }
 

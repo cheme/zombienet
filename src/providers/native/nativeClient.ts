@@ -53,7 +53,7 @@ export class NativeClient extends Client {
     this.configPath = configPath;
     this.namespace = namespace;
     this.debug = true;
-    this.timeout = 30; // secs
+    this.timeout = 60; // secs
     this.tmpDir = tmpDir;
     this.localMagicFilepath = `${tmpDir}/finished.txt`;
     this.processMap = {};
@@ -86,7 +86,7 @@ export class NativeClient extends Client {
     return;
   }
   // Podman ONLY support `pods`
-  async staticSetup(): Promise<void> {
+  async staticSetup(_: any): Promise<void> {
     return;
   }
 
@@ -277,7 +277,7 @@ export class NativeClient extends Client {
     let t = this.timeout;
     const args = [
       "-c",
-      `grep -E 'Listening for new connections|Is collating'  ${logFile} | wc -l`,
+      `grep -E 'Listening for new connections|Running JSON-RPC'  ${logFile} | wc -l`,
     ];
     do {
       const result = await this.runCommand(args);

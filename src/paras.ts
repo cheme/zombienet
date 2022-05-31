@@ -7,9 +7,9 @@ import {
 import { getUniqueName } from "./configGenerator";
 import { getClient } from "./providers/client";
 import { Providers } from "./providers";
-import { Node, Parachain } from "./types";
+import { fileMap, Node, Parachain } from "./types";
 import fs from "fs";
-import { getChainSpecRaw, setupChainSpec } from "./providers/native/chain-spec";
+import { changeGenesisConfig } from "./chain-spec";
 const debug = require("debug")("zombie::paras");
 
 export async function generateParachainFiles(
@@ -24,12 +24,18 @@ export async function generateParachainFiles(
   const wasmLocalFilePath = `${parachainFilesPath}/${GENESIS_WASM_FILENAME}`;
   const client = getClient();
 
+  const {
+    setupChainSpec,
+    getChainSpecRaw,
+  } = Providers.get(client.providerName);
+
   let chainSpecFullPath;
   if (parachain.cumulusBased) {
     // need to create the parachain spec
     const chainSpecFullPathPlain = `${tmpDir}/${chainName}-${parachain.id}-plain.json`;
     const relayChainSpecFullPathPlain = `${tmpDir}/${chainName}-plain.json`;
-    chainSpecFullPath = `${tmpDir}/${parachain.chain ? parachain.chain : chainName}-${parachain.id}.json`;
+    const chainSpecFileName = `${parachain.chain ? parachain.chain : chainName}-${parachain.id}.json`;
+    chainSpecFullPath = `${tmpDir}/${chainSpecFileName}`;
 
     debug("creating chain spec plain");
     // create or copy chain spec
@@ -38,7 +44,9 @@ export async function generateParachainFiles(
       {
         relaychain: {
           chainSpecCommand: `${parachain.collators[0].command} build-spec ${parachain.chain ? "--chain " + parachain.chain : ""} --disable-default-bootnode`,
+          defaultImage: parachain.collators[0].image
         },
+
       },
       chainName,
       chainSpecFullPathPlain
@@ -53,9 +61,12 @@ export async function generateParachainFiles(
     );
     plainData.para_id = parachain.id;
     plainData.relay_chain = relayChainSpec.id;
-    plainData.genesis.runtime.parachainInfo.parachainId = parachain.id;
+    if( plainData.genesis.runtime.parachainInfo?.parachainId) plainData.genesis.runtime.parachainInfo.parachainId  = parachain.id;
     const data = JSON.stringify(plainData, null, 2);
     fs.writeFileSync(chainSpecFullPathPlain, data);
+
+    // customize if needed
+    if(parachain.genesis) await changeGenesisConfig(chainSpecFullPathPlain, parachain.genesis);
 
     debug("creating chain spec raw");
     // generate the raw chain spec
@@ -67,12 +78,25 @@ export async function generateParachainFiles(
       chainSpecFullPath
     );
 
+    // ensure the correct para_id
+    const paraSpecRaw = JSON.parse(fs.readFileSync(chainSpecFullPath).toString());
+    paraSpecRaw.para_id = parachain.id;
+    fs.writeFileSync(chainSpecFullPath, JSON.stringify(paraSpecRaw, null, 2));
+
     // add spec file to copy to all collators.
     parachain.specPath = chainSpecFullPath;
   }
 
+  const chainSpecFileName = `${parachain.chain ? parachain.chain : chainName}-${parachain.id}.json`;
+
   // check if we need to create files
   if (parachain.genesisStateGenerator || parachain.genesisWasmGenerator) {
+    const filesToCopyToNodes: fileMap[] = []
+    if (parachain.cumulusBased && chainSpecFullPath) filesToCopyToNodes.push({
+      localFilePath: chainSpecFullPath,
+      remoteFilePath: `${client.remoteDir}/${chainSpecFileName}`,
+    });
+
     let commands = [];
     if (parachain.genesisStateGenerator) {
       let genesisStateGenerator = parachain.genesisStateGenerator.replace(
@@ -81,9 +105,11 @@ export async function generateParachainFiles(
       );
       // cumulus
       if (parachain.cumulusBased) {
+        const chainSpecPathInNode = client.providerName === "native" ? chainSpecFullPath : `${client.remoteDir}/${chainSpecFileName}`;
+
         genesisStateGenerator = genesisStateGenerator.replace(
           " > ",
-          ` --chain ${chainSpecFullPath} > `
+          ` --chain ${chainSpecPathInNode} > `
         );
       }
       commands.push(genesisStateGenerator);
@@ -95,9 +121,11 @@ export async function generateParachainFiles(
       );
       // cumulus
       if (parachain.collators[0].zombieRole === "cumulus-collator") {
+        const chainSpecPathInNode = client.providerName === "native" ? chainSpecFullPath : `${client.remoteDir}/${chainSpecFileName}`;
+
         genesisWasmGenerator = genesisWasmGenerator.replace(
           " > ",
-          ` --chain ${chainSpecFullPath} > `
+          ` --chain ${chainSpecPathInNode} > `
         );
       }
       commands.push(genesisWasmGenerator);
@@ -125,7 +153,7 @@ export async function generateParachainFiles(
     const podDef = await provider.genNodeDef(namespace, node);
     const podName = podDef.metadata.name;
 
-    await client.spawnFromDef(podDef);
+    await client.spawnFromDef(podDef, filesToCopyToNodes);
 
     if (parachain.genesisStateGenerator) {
       await client.copyFileFromPod(

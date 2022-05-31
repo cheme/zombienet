@@ -5,9 +5,16 @@ import { u8aToHex } from "@polkadot/util";
 import { mnemonicGenerate, mnemonicToMiniSecret } from "@polkadot/util-crypto";
 import { Node } from "./types";
 
-export async function generateKeyForNode(name: string): Promise<any> {
+
+function nameCase(string: string) {
+	return string.charAt(0).toUpperCase() + string.slice(1);
+}
+
+export async function generateKeyForNode(nodeName?: string): Promise<any> {
   await cryptoWaitReady();
 
+  const seed = nodeName ? `//${nameCase(nodeName)}` : u8aToHex(mnemonicToMiniSecret(mnemonicGenerate()));
+/*
   var seed = null;
 	if (name == "alice") {
     seed = `//Alice`;
@@ -25,6 +32,7 @@ export async function generateKeyForNode(name: string): Promise<any> {
     var mnemonic = mnemonicGenerate();
     seed = u8aToHex(mnemonicToMiniSecret(mnemonic));
 	}
+*/
 
   const sr_keyring = new Keyring({ type: "sr25519" });
   const sr_account = sr_keyring.createFromUri(`${seed}`);

@@ -316,23 +316,24 @@ export class KubeClient extends Client {
       const result = await this.runCommand(args, undefined, true);
       debug("copyFileToPod", args);
     } else {
-      const hashedName = getSha256(localFilePath);
+      const fileBuffer = await fs.readFile(localFilePath);
+      const fileHash = getSha256(fileBuffer.toString());
       const parts = localFilePath.split("/");
       const fileName = parts[parts.length - 1];
-      if (!fileUploadCache[hashedName]) {
+      if (!fileUploadCache[fileHash]) {
         console.log(
-          "uploading to fileserver: " + localFilePath + " as:" + hashedName
+          "uploading to fileserver: " + localFilePath + " as:" + fileHash
         );
         const args = [
           "cp",
           localFilePath,
-          `fileserver:/usr/share/nginx/html/${hashedName}`,
+          `fileserver:/usr/share/nginx/html/${fileHash}`,
         ];
 
         debug("copyFileToPod", args);
         const result = await this.runCommand(args, undefined, true);
         debug(result);
-        fileUploadCache[hashedName] = fileName;
+        fileUploadCache[fileHash] = fileName;
       }
 
       // download the file in the container
@@ -343,7 +344,7 @@ export class KubeClient extends Client {
         "/usr/bin/wget",
         "-O",
         podFilePath,
-        `http://fileserver/${hashedName}`,
+        `http://fileserver/${fileHash}`,
       ];
       debug("copyFileToPodFromFileServer", [...args, ...extraArgs]);
       let result = await this.runCommand(
@@ -403,7 +404,7 @@ export class KubeClient extends Client {
     return [ip, port ? port : P2P_PORT];
   }
 
-  async staticSetup() {
+  async staticSetup(settings: any) {
     let storageFiles: string[] = (await this.runningOnMinikube())
       ? [
           "node-data-tmp-storage-class-minikube.yaml",
@@ -420,21 +421,28 @@ export class KubeClient extends Client {
         type: "services",
         files: [
           "bootnode-service.yaml",
-          "backchannel-service.yaml",
+          settings.backchannel ? "backchannel-service.yaml" : null,
           "fileserver-service.yaml",
         ],
       },
       {
         type: "deployment",
-        files: ["backchannel-pod.yaml", "fileserver-pod.yaml"],
+        files: [
+          settings.backchannel ? "backchannel-pod.yaml": null,
+          "fileserver-pod.yaml"
+        ],
       },
     ];
 
     for (const resourceType of resources) {
       for (const file of resourceType.files) {
-        await this.createStaticResource(file);
+        if(file) await this.createStaticResource(file);
       }
     }
+  }
+
+  async spawnBackchannel() {
+
   }
 
   async setupCleaner(): Promise<NodeJS.Timer> {
@@ -492,7 +500,7 @@ export class KubeClient extends Client {
     return true;
   }
 
-  async startPortForwarding(port: number, identifier: string): Promise<number> {
+  async startPortForwarding(port: number, identifier: string, namespace?: string): Promise<number> {
     return new Promise((resolve, reject) => {
       const mapping = `:${port}`;
       const args = [
@@ -500,7 +508,7 @@ export class KubeClient extends Client {
         identifier,
         mapping,
         "--namespace",
-        this.namespace,
+        namespace || this.namespace,
         "--kubeconfig",
         this.configPath,
       ];
@@ -576,7 +584,7 @@ export class KubeClient extends Client {
         stdout: result.stdout,
       };
     } catch (error) {
-      console.log(error);
+      debug(error);
       throw error;
     }
   }

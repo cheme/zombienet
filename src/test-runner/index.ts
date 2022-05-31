@@ -4,17 +4,19 @@ import fs from "fs";
 import path from "path";
 import { ApiPromise } from "@polkadot/api";
 import { LaunchConfig } from "../types";
-import { sleep } from "../utils/misc-utils";
+import { isValidHttpUrl, sleep } from "../utils/misc-utils";
 import { readNetworkConfig } from "../utils/fs-utils";
-import { Network } from "../network";
+import { Network, rebuildNetwork } from "../network";
 import { decorators } from "../utils/colors";
-import { DEFAULT_INDIVIDUAL_TEST_TIMEOUT } from "../constants";
+import { DEFAULT_GLOBAL_TIMEOUT, DEFAULT_INDIVIDUAL_TEST_TIMEOUT } from "../constants";
 import minimatch from "minimatch";
+import { Providers } from "../providers/";
 
 import zombie from "../";
 const {
   connect,
-  chainUpgrade,
+  chainUpgradeFromUrl,
+  chainUpgradeFromLocalFile,
   chainCustomSectionUpgrade,
   validateRuntimeCode,
   findPatternInSystemEventSubscription,
@@ -45,7 +47,8 @@ export async function run(
   testFile: string,
   provider: string,
   inCI: boolean = false,
-  concurrency: number = 1
+  concurrency: number = 1,
+  runningNetworkSpecPath: string|undefined
 ) {
   let network: Network;
   let backchannelMap: BackchannelMap = {};
@@ -67,7 +70,8 @@ export async function run(
   }
 
   // set the provider
-  config.settings.provider = provider;
+  if(!config.settings) config.settings = {provider, timeout: DEFAULT_GLOBAL_TIMEOUT};
+  else config.settings.provider = provider;
 
   // find creds file
   let credsFile = inCI ? "config" : testDef.creds;
@@ -96,27 +100,41 @@ export async function run(
   const suite = Suite.create(mocha.suite, suiteName);
 
   suite.beforeAll("launching", async function () {
-    console.log(`\t Launching network... this can take a while.`);
     const launchTimeout = config.settings?.timeout || 500;
     this.timeout(launchTimeout * 1000);
     try {
-      network = await zombie.start(creds!, config, {
-        spawnConcurrency: concurrency,
-        inCI,
-      });
+      console.log("runningNetworkSpecPath", runningNetworkSpecPath);
+      if(! runningNetworkSpecPath) {
+        console.log(`\t Launching network... this can take a while.`);
+        network = await zombie.start(creds!, config, {
+          spawnConcurrency: concurrency,
+          inCI,
+        });
+      } else {
+        const runningNetworkSpec: any = require(runningNetworkSpecPath);
+        if(provider !== runningNetworkSpec.client.providerName) throw new Error(`Invalid provider, the provider set doesn't match with the running network definition`);
+
+        const {namespace, tmpDir} = runningNetworkSpec;
+        // initialize the Client
+        const client = Providers.get(runningNetworkSpec.client.providerName).initClient(runningNetworkSpec.client.configPath, runningNetworkSpec.namespace, runningNetworkSpec.tmpDir);
+        // initialize the network
+        network = rebuildNetwork(client, runningNetworkSpec);
+      }
 
       network.showNetworkInfo(config.settings.provider);
+
+      await sleep(5 * 1000);
       return;
     } catch (err) {
-      console.log("Error launching the network!");
-      console.log(`\n\t ${err}`);
+      console.log(`\n${decorators.red("Error launching the network!")}`);
+      console.log(`\t ${err}`);
       exitMocha(100);
     }
   });
 
   suite.afterAll("teardown", async function () {
     this.timeout(180 * 1000);
-    if (network) {
+    if (network && ! network.wasRunning) {
       await network.dumpLogs();
       const tests = this.test?.parent?.tests;
       if (tests) {
@@ -188,7 +206,7 @@ const exitMocha = (code: number) => {
 
 // REGEX
 // Node general
-const isUpRegex = new RegExp(/^([\w-]+): is up$/i);
+const isUpRegex = new RegExp(/^(([\w-]+): is up)+( within (\d+) (seconds|secs|s)?)?$/i);
 
 // parachains
 const parachainIsRegistered = new RegExp(
@@ -220,6 +238,12 @@ const assertLogLineRegex = new RegExp(
   /^(([\w-]+): log line (contains|matches)( regex| glob)? "(.+)")+( within (\d+) (seconds|secs|s))?$/i
 );
 
+// Tracing assertion
+// alice: trace with traceID <id> contains ["name", "name2",...]
+const isTracing = new RegExp(
+  /^(([\w-]+): trace with traceID (.*?) contains \[(.+)\])+( within (\d+) (seconds|secs|s))?$/i
+);
+
 // system events
 const assertSystemEventRegex = new RegExp(
   /^(([\w-]+): system event (contains|matches)( regex| glob)? "(.+)")+( within (\d+) (seconds|secs|s))?$/i
@@ -227,7 +251,7 @@ const assertSystemEventRegex = new RegExp(
 
 // Custom js-script
 const assertCustomJsRegex = new RegExp(
-  /^([\w-]+): js-script (\.{0,2}\/.*\.[\w]+)( with \"[\w ,]+\")?( return is (equal to|equals|=|==|greater than|>|at least|>=|lower than|<)? *(\d+))?( within (\d+) (seconds|secs|s))?$/i
+  /^([\w-]+): js-script (\.{0,2}\/.*\.[\w]+)( with \"[\w ,/]+\")?( return is (equal to|equals|=|==|greater than|>|at least|>=|lower than|<)? *(\d+))?( within (\d+) (seconds|secs|s))?$/i
 );
 
 // Backchannel
@@ -262,7 +286,7 @@ function parseAssertionLine(assertion: string) {
 
     return async (network: Network) => {
       const timeout: number|undefined = t;
-      const nodes = network.getNodesInGroup(nodeName);
+      const nodes = network.getNodes(nodeName);
       const results = await Promise.all(nodes.map(node => node.parachainIsRegistered(parachainId, timeout)));
 
       const parachainIsRegistered = results.every(Boolean);
@@ -281,7 +305,7 @@ function parseAssertionLine(assertion: string) {
 
     return async (network: Network) => {
       const timeout: number|undefined = t;
-      const nodes = network.getNodesInGroup(nodeName);
+      const nodes = network.getNodes(nodeName);
 
       const results = await Promise.all(nodes.map(node => node.parachainBlockHeight(parachainId, targetValue, timeout)));
       for( const value of results) {
@@ -291,11 +315,14 @@ function parseAssertionLine(assertion: string) {
   }
 
   m = isUpRegex.exec(assertion);
-  if (m && m[1] !== null) {
-    const nodeName = m[1];
+  if (m && m[2] !== null) {
+    let t: number;
+    const nodeName = m[2];
+    if (m[4]) t = parseInt(m[4], 10);
     return async (network: Network) => {
-      const nodes = network.getNodesInGroup(nodeName);
-      const results = await Promise.all(nodes.map(node => node.getMetric("process_start_time_seconds")));
+      const timeout: number|undefined = t;
+      const nodes = network.getNodes(nodeName);
+      const results = await Promise.all(nodes.map(node => node.getMetric("process_start_time_seconds", null, timeout)));
       const AllNodeUps = results.every(Boolean);
       expect(AllNodeUps).to.be.ok;
     };
@@ -312,11 +339,30 @@ function parseAssertionLine(assertion: string) {
     if (m[8]) t = parseInt(m[8], 10);
     return async (network: Network, backchannelMap: BackchannelMap) => {
       const timeout: number|undefined = t;
-      const nodes = network.getNodesInGroup(nodeName);
+      const nodes = network.getNodes(nodeName);
       const results = await Promise.all(nodes.map(node => node.getHistogramSamplesInBuckets(metricName, buckets, targetValue, timeout)));
 
       for( const value of results) {
         assert[comparatorFn](value, targetValue);
+      }
+    };
+  }
+
+  // alice: trace with traceID <id> contains ["name", "name2",...]
+  m = isTracing.exec(assertion);
+  if (m && m[2] && m[3] && m[4]) {
+    let t: number;
+    const nodeName = m[2];
+    const traceId = m[3];
+    const spanNames = m[4].split(",").map((x) => x.replaceAll('"', "").trim());
+    if (m[8]) t = parseInt(m[8], 10);
+    return async (network: Network, backchannelMap: BackchannelMap) => {
+      const _timeout: number|undefined = t;
+      const nodes = network.getNodes(nodeName);
+      const results = await Promise.all(nodes.map(node => node.getSpansByTraceId(traceId, network.tracingCollatorUrl!)));
+
+      for(const value of results) {
+        assert.includeOrderedMembers(value, spanNames);
       }
     };
   }
@@ -331,7 +377,7 @@ function parseAssertionLine(assertion: string) {
     if (m[7]) t = parseInt(m[7], 10);
     return async (network: Network, backchannelMap: BackchannelMap) => {
       const timeout: number|undefined = t;
-      const nodes = network.getNodesInGroup(nodeName);
+      const nodes = network.getNodes(nodeName);
       const results = await Promise.all(nodes.map(node => node.getMetric(metricName, targetValue, timeout)));
 
       for( const value of results) {
@@ -350,7 +396,7 @@ function parseAssertionLine(assertion: string) {
 
     return async (network: Network) => {
       const timeout: number|undefined = t;
-      const nodes = network.getNodesInGroup(nodeName);
+      const nodes = network.getNodes(nodeName);
       const results = await Promise.all(nodes.map(node => node.findPattern(pattern, isGlob, timeout)));
 
       const found = results.every(Boolean);
@@ -395,7 +441,6 @@ function parseAssertionLine(assertion: string) {
       backchannelMap: BackchannelMap,
       testFile: string
     ) => {
-      let limitTimeout;
       const networkInfo = {
         chainSpecPath: network.chainSpecFullPath,
         relay: network.relay.map((node) => {
@@ -426,6 +471,8 @@ function parseAssertionLine(assertion: string) {
         ),
       };
 
+      const nodes = network.getNodes(nodeName);
+      const args = withArgs === "" ? [] : withArgs.split("with ").slice(1)[0].replaceAll('"',"").split(",");
       const fileTestPath = path.dirname(testFile);
       const resolvedJsFilePath = path.resolve(fileTestPath, jsFile);
 
@@ -436,18 +483,18 @@ function parseAssertionLine(assertion: string) {
       (global as any).window = dom.window;
       (global as any).document = dom.window.document;
       const jsScript = await import(resolvedJsFilePath);
-      const args = withArgs === "" ? [] : withArgs.split(",");
-      let value;
+
+      let values;
       try {
-        const resp = await Promise.race([
-          jsScript.run(nodeName, networkInfo, args),
+        const resp: any = await Promise.race([
+          await Promise.all(nodes.map(node => jsScript.run(node.name, networkInfo, args))),
           new Promise((resolve) => setTimeout(() => {
             const err = new Error(`Timeout(${timeout}), "custom-js ${jsFile} within ${timeout} secs" didn't complete on time.`);
             return resolve(err);
           }, timeout * 1000))
         ]);
         if( resp instanceof Error ) throw resp
-        else value = resp;
+        else values = resp;
 
       } catch (err: any) {
         console.log(`\n\t ${decorators.red(`Error running script: ${jsFile}`)}`);
@@ -458,11 +505,13 @@ function parseAssertionLine(assertion: string) {
       // remove shim
       (global as any).window = undefined;
       (global as any).document = undefined;
-      clearTimeout(limitTimeout);
+
       if (targetValue) {
         if (comparatorFn !== "equals")
           targetValue = parseInt(targetValue as string, 10);
-        assert[comparatorFn](value, targetValue);
+        for( const value of values) {
+          assert[comparatorFn](value, targetValue);
+        }
       } else {
         // test don't have matching output
         expect(true).to.be.ok;
@@ -507,7 +556,7 @@ function parseAssertionLine(assertion: string) {
     if (m[4]) t = parseInt(m[4], 10);
     return async (network: Network, backchannelMap: BackchannelMap) => {
       const timeout: number|undefined = t;
-      const nodes = network.getNodesInGroup(nodeName);
+      const nodes = network.getNodes(nodeName);
       const results = await Promise.all(nodes.map(node => node.restart(timeout)));
 
       const restarted = results.every(Boolean);
@@ -519,7 +568,7 @@ function parseAssertionLine(assertion: string) {
   if (m && m[2]) {
     const nodeName = m[2];
     return async (network: Network, backchannelMap: BackchannelMap) => {
-      const nodes = network.getNodesInGroup(nodeName);
+      const nodes = network.getNodes(nodeName);
       const results = await Promise.all(nodes.map(node => node.pause()));
 
       const paused = results.every(Boolean);
@@ -549,7 +598,7 @@ function parseAssertionLine(assertion: string) {
   if (m && m[2]) {
     const nodeName = m[2];
     const parachainId = parseInt(m[3], 10);
-    const upgradeFileUrl = m[4];
+    const upgradeFileOrUrl = m[4];
     let timeout: number;
     if (m[6]) timeout = parseInt(m[6], 10);
 
@@ -560,11 +609,20 @@ function parseAssertionLine(assertion: string) {
     ) => {
       let node = network.node(nodeName);
       let api: ApiPromise = await connect(node.wsUri);
+      let hash;
 
-      const hash = await chainUpgrade(api, upgradeFileUrl);
-      // validate in the <node>: of the relay chain
-      node = network.node(nodeName);
-      api = await connect(node.wsUri);
+      if (isValidHttpUrl(upgradeFileOrUrl)) {
+        hash = await chainUpgradeFromUrl(api, upgradeFileOrUrl);
+      } else {
+        const fileTestPath = path.dirname(testFile);
+        const resolvedJsFilePath = path.resolve(fileTestPath, upgradeFileOrUrl);
+        hash = await chainUpgradeFromLocalFile(api, resolvedJsFilePath);
+      }
+
+      // validate in a node of the relay chain
+      api.disconnect();
+      const {wsUri, userDefinedTypes } = network.relay[0];
+      api = await connect(wsUri, userDefinedTypes);
       const valid = await validateRuntimeCode(api, parachainId, hash, timeout);
       api.disconnect();
 

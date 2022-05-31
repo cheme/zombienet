@@ -1,6 +1,6 @@
 {
   "name": "zombienet",
-  "version": "1.2.26",
+  "version": "1.2.36",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "author": "Javier Viola <javier@parity.io>",
@@ -53,10 +53,9 @@
     ]
   },
   "engines": {
-      "node": ">=16"
+    "node": ">=16"
   },
   "devDependencies": {
-    "@substrate/connect": "^0.4.7",
     "@types/fs-extra": "^9.0.13",
     "@types/jsdom": "^16.2.14",
     "@types/minimatch": "^3.0.5",

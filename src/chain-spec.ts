@@ -3,6 +3,7 @@ import { decorators } from "./utils/colors";
 import { ChainSpec, HrmpChannelsConfig } from "./types";
 import { readDataFile } from "./utils/fs-utils";
 const fs = require("fs");
+const debug = require("debug")("zombie::chain-spec");
 
 // Get authority keys from within chainSpec data
 function getAuthorityKeys(chainSpec: ChainSpec) {
@@ -131,9 +132,9 @@ export async function addParachainToGenesis(
 export async function changeGenesisConfig(spec_path: string, updates: any) {
   let rawdata = fs.readFileSync(spec_path);
   let chainSpec = JSON.parse(rawdata);
-
+  const msg = `⚙ Updating Chain Genesis Configuration (path: ${spec_path})`;
   console.log(
-    `\n\t\t ${decorators.green("⚙ Updating Relay Chain Genesis Configuration")}`
+    `\n\t\t ${decorators.green(msg)}`
   );
 
   if (chainSpec.genesis) {
@@ -227,8 +228,9 @@ function findAndReplaceConfig(obj1: any, obj2: any) {
         console.log(
           `\n\t\t  ${decorators.green(
             "✓ Updated Genesis Configuration"
-          )} [ ${key}: ${JSON.parse(JSON.stringify(obj2))[key]} ]`
+            )} [ key : ${key} ]`
         );
+        debug(`[ ${key}: ${JSON.parse(JSON.stringify(obj2))[key]} ]`);
       }
     } else {
       console.error(
