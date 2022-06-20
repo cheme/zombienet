@@ -128,6 +128,7 @@ async function spawn(
   const filePath = resolve(configFile);
   const config: LaunchConfig = readNetworkConfig(filePath);
 
+	console.log(`Read c ${config}`);
   // if a provider is passed, let just use it.
   if (opts.provider && AVAILABLE_PROVIDERS.includes(opts.provider)) {
     if (!config.settings) {

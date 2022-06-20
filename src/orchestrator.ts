@@ -65,6 +65,7 @@ export async function start(
   launchConfig: LaunchConfig,
   options?: orchestratorOptions
 ) {
+				console.log("Starting !!");
   const opts = {
     ...{ monitor: false, spawnConcurrency: 1, inCI: false },
     ...options,

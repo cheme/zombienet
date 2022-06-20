@@ -51,6 +51,8 @@ function getReplacementInText(content: string): string[] {
 }
 
 export function readNetworkConfig(filepath: string): LaunchConfig {
+  // TODO: yo
+	console.log("strat recod cond");
   const configBasePath = path.dirname(filepath);
   const env = new Environment(new RelativeLoader([configBasePath]));
 
@@ -67,14 +69,22 @@ export function readNetworkConfig(filepath: string): LaunchConfig {
     throw new Error(`Environment not set for : ${replacements.join(",")}`);
   }
 
+	console.log(`p : ${filepath}`);
   // TODO: add better file recognition
   const fileType = filepath.split(".").pop();
+	console.log(`ty : ${fileType}`);
+	console.log(`content : ${content}`);
   const config: LaunchConfig =
     fileType?.toLocaleLowerCase() === "json"
       ? JSON.parse(content)
       : toml.parse(content);
 
-  config.configBasePath = configBasePath;
+	console.log(`content parsed`);
+	console.log(`pat : ${configBasePath}`);
+//  config.configBasePath = configBasePath;
+	console.log("end recod cond");
+	console.log(`${config.configBasePath}`);
+	console.log("end recod");
   return config;
 }
 

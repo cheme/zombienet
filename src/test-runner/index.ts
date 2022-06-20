@@ -50,6 +50,7 @@ export async function run(
   concurrency: number = 1,
   runningNetworkSpecPath: string|undefined
 ) {
+	console.log("config!!");
   let network: Network;
   let backchannelMap: BackchannelMap = {};
   // read test file
@@ -93,19 +94,22 @@ export async function run(
     if (credsFileExistInPath) creds = credsFileExistInPath + "/" + credsFile;
   }
 
+
+	console.log("config");
   if (!creds && config.settings.provider === "kubernetes")
     throw new Error(`Invalid credential file path: ${credsFile}`);
 
   // create suite
   const suite = Suite.create(mocha.suite, suiteName);
 
-  suite.beforeAll("launching", async function () {
-    const launchTimeout = config.settings?.timeout || 500;
+	console.log("config");
+	suite.beforeAll("launching", async function () {
+					const launchTimeout = config.settings?.timeout || 500;
     this.timeout(launchTimeout * 1000);
     try {
       console.log("runningNetworkSpecPath", runningNetworkSpecPath);
       if(! runningNetworkSpecPath) {
-        console.log(`\t Launching network... this can take a while.`);
+        console.log(`\t Launching network2... this can take a while.`);
         network = await zombie.start(creds!, config, {
           spawnConcurrency: concurrency,
           inCI,
@@ -158,15 +162,39 @@ export async function run(
     return;
   });
 
+	let race: ((network: Network, backchannelMap: BackchannelMap, testFile: string) => Promise<void>)[] = [];
+	let race_name = "One of :\n";
+	let in_race = false;
   for (const assertion of testDef.assertions) {
-    const testFn = parseAssertionLine(assertion);
-    if (!testFn) continue;
-    const test = new Test(
-      assertion,
-      async () => await testFn(network, backchannelMap, testFile)
-    );
-    suite.addTest(test);
-    test.timeout(0);
+    if (assertion == "RACE") {
+      in_race = true;
+		} else if (assertion == "ENDRACE") {
+      in_race = false;
+		  const test = new Test(
+		  	race_name,
+		  	async () => await Promise.race(race)
+		  );
+		  suite.addTest(test);
+			race_name = "One of :\n";
+		  test.timeout(0);
+		} else 
+		if (in_race) {
+		  const testFn = parseAssertionLine(assertion);
+		  if (!testFn) continue;
+			race_name = race_name.concat("\t");
+			race_name = race_name.concat(assertion);
+			race_name = race_name.concat("\n");
+			race.push(testFn);
+		} else {
+		  const testFn = parseAssertionLine(assertion);
+		  if (!testFn) continue;
+		  const test = new Test(
+		  	assertion,
+		  	async () => await testFn(network, backchannelMap, testFile)
+		  );
+		  suite.addTest(test);
+		  test.timeout(0);
+		}
   }
 
   // run
@@ -718,11 +746,15 @@ function parseTestFile(testFile: string): TestDefinition {
   let description: string = "";
   let creds: string = "";
   const assertions = [];
+  let race = [];
 
   for (let line of content.split("\n")) {
     line = line.trim();
     if (line[0] === "#" || line.length === 0) continue; // skip comments and empty lines;
     let parts = line.split(":");
+		if (line == "RACE" || line == "ENDRACE") {
+			assertions.push(line)
+		} else {
     if (parts.length < 2 && !line.includes("sleep")) continue; // bad line
     switch (parts[0].toLocaleLowerCase()) {
       case "network":
@@ -738,6 +770,7 @@ function parseTestFile(testFile: string): TestDefinition {
         assertions.push(line);
         break;
     }
+		}
   }
 
   const required = ["Network", "Creds"];
